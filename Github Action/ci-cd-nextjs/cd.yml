@@ -1,0 +1,127 @@
+name: Publish to AWS
+
+# Run on call from other workflow
+on:
+  workflow_call:
+    inputs:
+      deploymentMatrix:
+        description: 'The matrix of deployment environments'
+        required: true
+        type: string
+
+      artifactName:
+        description: 'The name of the artifact uploaded with actions/upload-artifact'
+        required: true
+        type: string
+
+    secrets:
+      SSH_KEY:
+        description: 'SSH private key'
+
+jobs:
+  prepare-release-on-servers:
+    name: '${{ matrix.server.name }}: Prepare release'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+
+      - name: Upload to ${{ matrix.server.name }}
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          source: ${{ github.sha }}.tar.gz
+          target: ${{ matrix.server.path }}/artifacts
+
+      - name: Extract archive and create directories in ${{ matrix.server.name }}
+        uses: appleboy/ssh-action@master
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY  }}
+          port: ${{ matrix.server.port }}
+          envs: GITHUB_SHA
+          script: |
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+            RELEASE_PATH="${{ matrix.server.path }}/releases/${GITHUB_SHA}"
+            mkdir -p $RELEASE_PATH
+            tar xzf ${{ matrix.server.path }}/artifacts/${GITHUB_SHA}.tar.gz -C $RELEASE_PATH
+            cd $RELEASE_PATH
+            pnpm install -P --force --ignore-scripts
+
+  activate-release:
+    name: '${{ matrix.server.name }}: Activate release'
+    runs-on: ubuntu-latest
+    needs: [prepare-release-on-servers]
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+    steps:
+      - name: Activate release
+        uses: appleboy/ssh-action@master
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_PATH: ${{ matrix.server.path }}/releases/${{ github.sha }}
+          ACTIVE_RELEASE_PATH: ${{ matrix.server.path }}/current
+          BASE_PATH: ${{ matrix.server.path }}
+          # LOCAL_ENV: ${{ secrets.LOCAL_ENV }}
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          envs: GITHUB_SHA,RELEASE_PATH,ACTIVE_RELEASE_PATH,BASE_PATH,ENV_PATH
+          script: |
+            set -e  # Exit on any command failure
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+            # printf "%s" "$LOCAL_ENV" > "${BASE_PATH}/.env"
+            # ln -s -f ${BASE_PATH}/.env $RELEASE_PATH
+            ln -s -n -f $RELEASE_PATH $ACTIVE_RELEASE_PATH
+
+            #  Ensures only one PM2 reload runs at a time to avoid conflicts.
+            APP_NAME="frontend"
+            LOCK_FILE="/tmp/pm2_reload.lock"
+            (
+              flock 200
+              echo "Reloading PM2 app: $APP_NAME"
+              pm2 reload "$APP_NAME"
+              echo "Done reloading $APP_NAME"
+            ) 200>"$LOCK_FILE"
+            # --- End PM2 reload section ---
+
+            set +e  # Disable exit on command failure
+
+  clean-up:
+    name: '${{ matrix.server.name }}: Clean up'
+    runs-on: ubuntu-latest
+    needs: [prepare-release-on-servers]
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+    steps:
+      - name: Run after hooks
+        uses: appleboy/ssh-action@master
+        env:
+          RELEASES_PATH: ${{ matrix.server.path }}/releases
+          ARTIFACTS_PATH: ${{ matrix.server.path }}/artifacts
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          envs: RELEASES_PATH,ARTIFACTS_PATH
+          script: |
+            cd $RELEASES_PATH && ls -t -1 | tail -n +11 | xargs rm -rf
+            cd $ARTIFACTS_PATH && ls -t -1 | tail -n +11 | xargs rm -rf

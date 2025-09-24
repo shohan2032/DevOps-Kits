@@ -1,0 +1,82 @@
+name: CI Pipeline
+run-name: Building ${{ inputs.releaseType }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseType:
+        description: 'For staging build follow multi-staging guidelines'
+        type: choice
+        required: true
+        options:
+          - prod
+          # - staging
+        # default: 'staging'
+
+jobs:
+  build:
+    name: Install and Build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.inputs.releaseType }}
+      cancel-in-progress: true
+    outputs:
+      DEPLOYMENT_MATRIX: ${{ steps.export-deployment-matrix.outputs.DEPLOYMENT_MATRIX }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.releaseType == 'prod' && 'main' || github.event.inputs.releaseType }}
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --force --ignore-scripts
+
+      - name: Build
+        run: |
+          pnpm build
+
+      - name: Copy certificates folder
+        run: cp -r certificates build
+
+      - name: Create deployment artifact
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: tar -czf "${GITHUB_SHA}".tar.gz -C build .
+
+      - name: Store artifact for distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: ${{ github.sha }}.tar.gz
+          retention-days: 1
+
+      - name: Export deployment matrix
+        id: export-deployment-matrix
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          JSON="$(cat ./.github/workflows/servers.json)"
+
+          # Filter the JSON based on the releaseType
+          FILTERED_JSON=$(echo "$JSON" | jq --arg releaseType "${{ inputs.releaseType == 'prod' && 'prod'  || 'staging' }}" 'map(select(.type == $releaseType))')
+          echo "DEPLOYMENT_MATRIX<<${delimiter}" >> "${GITHUB_OUTPUT}"
+          echo "$FILTERED_JSON" >> "${GITHUB_OUTPUT}"
+          echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    needs: build
+    uses: AppifyLab/ezycourse-api/.github/workflows/publish-to-aws.yml@main
+    with:
+      deploymentMatrix: ${{ needs.build.outputs.DEPLOYMENT_MATRIX }}
+      artifactName: app-build
+    secrets:
+      SSH_KEY: ${{  secrets.SSH_KEY }}

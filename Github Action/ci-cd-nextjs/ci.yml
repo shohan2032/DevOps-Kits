@@ -1,0 +1,98 @@
+name: CI Pipeline
+run-name: Building ${{ inputs.releaseType }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseType:
+        description: 'For staging follow the multi staging guidelines'
+        type: choice
+        required: true
+        options:
+          - prod
+
+jobs:
+  build:
+    name: Install and Build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.inputs.releaseType }}
+      cancel-in-progress: true
+    outputs:
+      DEPLOYMENT_MATRIX: ${{ steps.export-deployment-matrix.outputs.DEPLOYMENT_MATRIX }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.releaseType == 'prod' && 'main' || github.event.inputs.releaseType }}
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.13.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --force --ignore-scripts
+
+      # - uses: actions/cache@v3
+      #   name: Setup .next cache
+      #   with:
+      #     path: ${{ github.workspace }}/.next/cache
+      #     key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+      #     # If source files changed but packages didn't, rebuild from a prior cache.
+      #     restore-keys: |
+      #       ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=4096
+          NEXT_PUBLIC_BUGSNAG_API_KEY: 45adb16b56f90c352656cb6c8c19411b
+        run: |
+          export NEXT_PUBLIC_NODE_ENV=production
+          # export NEXT_PUBLIC_ASSET_PREFIX=${{ inputs.releaseType == 'prod' && 'https://cdn.ezycourse.net'  || 'https://stagingserver.b-cdn.net' }}
+          pnpm build
+
+      - name: Create deployment artifact
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          # delete .next/cache
+          rm -rf .next/cache
+          echo "Deleted .next/cache"
+
+          echo "Creating deployment artifact"
+          tar -czf "${GITHUB_SHA}".tar.gz package.json next.config.js blackList.json whiteList.json .next public .npmrc
+
+          echo "Created deployment artifact"
+
+      - name: Store artifact for distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: ${{ github.sha }}.tar.gz
+          retention-days: 1
+
+      - name: Export deployment matrix
+        id: export-deployment-matrix
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          JSON="$(cat ./.github/workflows/servers.json)"
+
+          # Filter the JSON based on the releaseType
+          FILTERED_JSON=$(echo "$JSON" | jq --arg releaseType "${{ inputs.releaseType == 'prod' && 'prod'  || 'staging' }}" 'map(select(.type == $releaseType))')
+          echo "DEPLOYMENT_MATRIX<<${delimiter}" >> "${GITHUB_OUTPUT}"
+          echo "$FILTERED_JSON" >> "${GITHUB_OUTPUT}"
+          echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    needs: build
+    uses: .github/workflows/publish-to-aws.yml@main
+    with:
+      deploymentMatrix: ${{ needs.build.outputs.DEPLOYMENT_MATRIX }}
+      artifactName: app-build
+    secrets:
+      SSH_KEY: ${{  secrets.SSH_KEY }}

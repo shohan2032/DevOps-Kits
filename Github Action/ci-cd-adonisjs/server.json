@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Staging",
+    "ip": "",
+    "username": "ubuntu",
+    "port": "22",
+    "beforeHooks": "",
+    "afterHooks": "",
+    "path": "/home/ubuntu/backend",
+    "type": "staging"
+  },
+  {
+    "name": "Multi staging",
+    "ip": "",
+    "username": "ubuntu",
+    "port": "22",
+    "beforeHooks": "",
+    "afterHooks": "",
+    "path": "/home/ubuntu/backend",
+    "type": "multi-staging"
+  },
+  {
+    "name": "Server 1",
+    "ip": "",
+    "username": "ubuntu",
+    "port": "22",
+    "beforeHooks": "",
+    "afterHooks": "",
+    "path": "/home/ubuntu/backend",
+    "type": "prod"
+  },
+  {
+    "name": "Server 2",
+    "ip": "",
+    "username": "ubuntu",
+    "port": "22",
+    "beforeHooks": "",
+    "afterHooks": "",
+    "path": "/home/ubuntu/backend",
+    "type": "prod"
+  }
+]

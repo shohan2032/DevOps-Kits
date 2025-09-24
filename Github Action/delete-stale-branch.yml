@@ -1,0 +1,57 @@
+name: Delete Stale Branches
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Runs weekly on Sunday at midnight
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Number of days since last update'
+        required: false
+        default: '20'
+        type: string
+      dry_run:
+        description: 'Dry run mode (true/false)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete old synchronized branches
+        run: |
+          # Get input parameters with defaults
+          DAYS="${{ github.event.inputs.days || '10' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+
+          # Get list of remote branches excluding main/master
+          git fetch --prune
+
+          echo "Running with parameters: DAYS=$DAYS, DRY_RUN=$DRY_RUN"
+
+          for branch in $(git branch -r | grep -v 'main\|master\|HEAD' | sed 's/origin\///'); do
+            # Get last commit timestamp in Unix format
+            last_commit=$(git log -1 --format=%ct "origin/$branch")
+            current_time=$(date +%s)
+            days_old=$(( ($current_time - $last_commit) / (24*60*60) ))
+            
+            # Check if branch is exactly in sync with main
+            ahead_count=$(git rev-list --count main..origin/$branch)
+            
+            if [ $days_old -gt $DAYS ] && [ "$ahead_count" -eq 0 ]; then
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "[DRY RUN] Would delete branch $branch (${days_old} days old)"
+              else
+                echo "Deleting branch $branch (${days_old} days old)"
+                git push origin --delete "$branch"
+              fi
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,21 @@
+name: Close Stale Pull Requests
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # every day at midnight
+  workflow_dispatch:
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          stale-pr-message: 'This pull request is stale because it has not been updated for 7 days.'
+          days-before-stale: 7
+
+          close-pr-message: 'The pull request is being closed due to inactivity. Please reopen if you still want to merge this.'
+          days-before-close: 1
+
+          close-pr-label: 'Closed by Stale'
+          stale-pr-label: Stale

@@ -1,0 +1,65 @@
+name: Delete a staging site from multi staging server
+
+on:
+  pull_request:
+    types:
+      - closed
+    # branches:
+    #   - main
+
+jobs:
+  delete-staging:
+    name: Delete staging site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete staging site
+        uses: appleboy/ssh-action@master
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        with:
+          host: '18.192.50.113'
+          username: 'ubuntu'
+          key: ${{ secrets.SSH_KEY  }}
+          port: 22
+          envs: BRANCH_NAME
+          script: |
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+
+            SUBDOMAIN=$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's|/|-|g' -e 's/[^a-z0-9 -_]//g' -e 's/[[:space:]]\+/-/g' -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//')
+
+            RELEASE_PATH="/home/ubuntu/frontend/releases/$SUBDOMAIN"
+            rm -rf $RELEASE_PATH
+            echo "Deleted $RELEASE_PATH"
+
+            pm2 delete "frontend-$SUBDOMAIN"
+            echo "Deleted pm2 process frontend-$SUBDOMAIN"
+
+            # Delete the line with the subdomain from the port map file
+            sed -i "/[[:space:]]$SUBDOMAIN$/d" /home/ubuntu/scripts/frontend-port-map.txt
+            echo "Deleted $SUBDOMAIN from /home/ubuntu/scripts/frontend-port-map.txt"
+
+            # Remove the NGINX configuration file
+            sudo rm -f "/etc/nginx/sites-available/$SUBDOMAIN.ecstaging.org"
+            sudo rm -f "/etc/nginx/sites-enabled/$SUBDOMAIN.ecstaging.org"
+            echo "Deleted NGINX configuration file for $SUBDOMAIN.ecstaging.org"
+
+            # Reload NGINX
+            sudo systemctl reload nginx
+            echo "Reloaded NGINX"
+
+            echo "Deleted staging site $SUBDOMAIN"
+            echo ":rocket: Script executed successfully"
+
+      - name: Comment on pull request with deletion confirmation
+        uses: actions/github-script@v7
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `:rocket: Staging site for branch ${process.env.BRANCH_NAME} has been deleted.`
+            })

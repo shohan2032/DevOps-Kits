@@ -1,0 +1,151 @@
+name: Publish to Multi staging
+
+# Run on call from other workflow
+on:
+  workflow_call:
+    inputs:
+      deploymentMatrix:
+        description: 'The matrix of deployment environments'
+        required: true
+        type: string
+
+      artifactName:
+        description: 'The name of the artifact uploaded with actions/upload-artifact'
+        required: true
+        type: string
+      fileName:
+        description: 'The name of the file uploaded with actions/upload-artifact (Without extension)'
+        required: true
+        type: string
+
+    secrets:
+      SSH_KEY:
+        description: 'Multi staging SSH private key'
+
+jobs:
+  prepare-release-on-servers:
+    name: '${{ matrix.server.name }}: Prepare release'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+
+      - name: Upload to ${{ matrix.server.name }}
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          source: ${{ inputs.fileName }}.tar.gz
+          target: ${{ matrix.server.path }}/artifacts
+
+      - name: Extract archive and create directories in ${{ matrix.server.name }}
+        uses: appleboy/ssh-action@master
+        env:
+          FILE_NAME: ${{ inputs.fileName }}
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY  }}
+          port: ${{ matrix.server.port }}
+          envs: FILE_NAME
+          script: |
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+            RELEASE_PATH="${{ matrix.server.path }}/releases/${FILE_NAME}"
+            # if exists, delete the release directory
+            rm -rf $RELEASE_PATH
+            # create the release directory
+            mkdir -p $RELEASE_PATH
+            tar xzf ${{ matrix.server.path }}/artifacts/${FILE_NAME}.tar.gz -C $RELEASE_PATH
+            cd $RELEASE_PATH
+
+            # after extracting delete the tar file to save space
+            echo "Deleting tar file"
+            rm -f ${{ matrix.server.path }}/artifacts/${FILE_NAME}.tar.gz
+            echo "Deleted tar file"
+
+            echo "Installing production dependencies only"
+            pnpm install -P --force --ignore-scripts
+            echo "Dependencies installed"
+
+            sudo env "PATH=$PATH" node .scripts/assign-frontend-port.js "${FILE_NAME}"
+
+            # change file permission 
+            sudo chown ubuntu:ubuntu "${RELEASE_PATH}/ecosystem.config.js" || true
+            echo "Starting the server"
+            pm2 start "${RELEASE_PATH}/ecosystem.config.js" || true
+
+      - name: Comment on pull request with deployment link
+        uses: actions/github-script@v7
+        env:
+          FILE_NAME: ${{ inputs.fileName }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `Deployed to https://${process.env.FILE_NAME}.ecstaging.org`
+            })
+
+  # activate-release:
+  #   name: '${{ matrix.server.name }}: Activate release'
+  #   runs-on: ubuntu-latest
+  #   needs: [prepare-release-on-servers]
+  #   strategy:
+  #     matrix:
+  #       server: ${{ fromJson(inputs.deploymentMatrix) }}
+  #   steps:
+  #     - name: Activate release
+  #       uses: appleboy/ssh-action@master
+  #       env:
+  #         GITHUB_SHA: ${{ github.sha }}
+  #         RELEASE_PATH: ${{ matrix.server.path }}/releases/${{ github.sha }}
+  #         ACTIVE_RELEASE_PATH: ${{ matrix.server.path }}/current
+  #         BASE_PATH: ${{ matrix.server.path }}
+  #         # LOCAL_ENV: ${{ secrets.LOCAL_ENV }}
+  #       with:
+  #         host: ${{ matrix.server.ip }}
+  #         username: ${{ matrix.server.username }}
+  #         key: ${{ secrets.SSH_KEY }}
+  #         port: ${{ matrix.server.port }}
+  #         envs: GITHUB_SHA,RELEASE_PATH,ACTIVE_RELEASE_PATH,BASE_PATH,ENV_PATH
+  #         script: |
+  #           set -e  # Exit on any command failure
+  #           export NVM_DIR=~/.nvm
+  #           source ~/.nvm/nvm.sh || true
+  #           # printf "%s" "$LOCAL_ENV" > "${BASE_PATH}/.env"
+  #           # ln -s -f ${BASE_PATH}/.env $RELEASE_PATH
+  #           ln -s -n -f $RELEASE_PATH $ACTIVE_RELEASE_PATH
+  #           pm2 reload frontend
+  #           set +e  # Disable exit on command failure
+
+  # clean-up:
+  #   name: '${{ matrix.server.name }}: Clean up'
+  #   runs-on: ubuntu-latest
+  #   needs: [prepare-release-on-servers]
+  #   strategy:
+  #     matrix:
+  #       server: ${{ fromJson(inputs.deploymentMatrix) }}
+  #   steps:
+  #     - name: Run after hooks
+  #       uses: appleboy/ssh-action@master
+  #       env:
+  #         RELEASES_PATH: ${{ matrix.server.path }}/releases
+  #         ARTIFACTS_PATH: ${{ matrix.server.path }}/artifacts
+  #       with:
+  #         host: ${{ matrix.server.ip }}
+  #         username: ${{ matrix.server.username }}
+  #         key: ${{ secrets.SSH_KEY }}
+  #         port: ${{ matrix.server.port }}
+  #         envs: RELEASES_PATH,ARTIFACTS_PATH
+  #         script: |
+  #           cd $RELEASES_PATH && ls -t -1 | tail -n +6 | xargs rm -rf
+  #           cd $ARTIFACTS_PATH && ls -t -1 | tail -n +6 | xargs rm -rf

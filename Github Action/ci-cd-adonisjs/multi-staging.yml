@@ -1,0 +1,112 @@
+name: Multi staging deployment
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - labeled
+    branches:
+      - main
+
+jobs:
+  check_label:
+    runs-on: ubuntu-latest
+    outputs:
+      has_staging_label: ${{ steps.check_labels.outputs.has_staging_label }}
+      school_id: ${{ steps.check_labels.outputs.school_id }}
+    steps:
+      - id: check_labels
+        run: |
+          labels=$(jq -r '.pull_request.labels[].name' "$GITHUB_EVENT_PATH")
+          echo $labels
+          staging_label=$(echo "$labels" | grep -iE '^STAGING-[0-9]+$' | head -n1)
+          if [[ -n "$staging_label" ]]; then
+            echo "has_staging_label=true" >> $GITHUB_OUTPUT
+            school_id=$(echo "$staging_label" | sed -E 's/^STAGING-([0-9]+)$/\1/')
+            echo "school_id=$school_id" >> $GITHUB_OUTPUT
+          else
+            echo "has_staging_label=false" >> $GITHUB_OUTPUT
+            echo "school_id=" >> $GITHUB_OUTPUT
+          fi
+  build:
+    needs: check_label
+    if: needs.check_label.outputs.has_staging_label == 'true'
+    name: Install and Build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      DEPLOYMENT_MATRIX: ${{ steps.export-deployment-matrix.outputs.DEPLOYMENT_MATRIX }}
+      SUBDOMAIN: ${{ steps.create-deployment-artifact.outputs.SUBDOMAIN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.13.0
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --force --ignore-scripts
+
+      - name: Build
+        run: |
+          pnpm build
+
+      - name: Copy neccessary folder to build
+        run: |
+          cp -r certificates build
+          cp -r .scripts build
+
+      - name: Create deployment artifact
+        id: create-deployment-artifact
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          SUBDOMAIN=$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's|/|-|g' -e 's/[^a-z0-9 -_]//g' -e 's/[[:space:]]\+/-/g' -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//')
+          echo "SUBDOMAIN: $SUBDOMAIN"
+          echo "SUBDOMAIN=${SUBDOMAIN}" >> $GITHUB_ENV
+          echo "SUBDOMAIN=${SUBDOMAIN}" >> $GITHUB_OUTPUT
+          tar -czf "${SUBDOMAIN}".tar.gz -C build .
+
+      - name: Store artifact for distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: ${{ steps.create-deployment-artifact.outputs.SUBDOMAIN }}.tar.gz
+          retention-days: 1
+
+      - name: Export deployment matrix
+        id: export-deployment-matrix
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          JSON="$(cat ./.github/workflows/servers.json)"
+
+          # Filter the JSON based on the releaseType
+          FILTERED_JSON=$(echo "$JSON" | jq --arg releaseType "multi-staging" 'map(select(.type == $releaseType))')
+          echo "DEPLOYMENT_MATRIX<<${delimiter}" >> "${GITHUB_OUTPUT}"
+          echo "$FILTERED_JSON" >> "${GITHUB_OUTPUT}"
+          echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    needs:
+      - build
+      - check_label
+    if: needs.check_label.outputs.has_staging_label == 'true'
+    uses: AppifyLab/ezycourse-api/.github/workflows/publish-to-multi-staging.yml@main
+    with:
+      deploymentMatrix: ${{ needs.build.outputs.DEPLOYMENT_MATRIX }}
+      artifactName: app-build
+      fileName: ${{ needs.build.outputs.SUBDOMAIN  }}
+      schoolId: ${{ needs.check_label.outputs.school_id }}
+    secrets:
+      SSH_KEY: ${{  secrets.SSH_KEY }}

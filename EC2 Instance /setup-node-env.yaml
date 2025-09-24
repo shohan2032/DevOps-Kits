@@ -1,0 +1,57 @@
+- name: Initial Node.js environment setup on EC2
+  hosts: ec2_instances
+  become: yes
+  vars:
+    nvm_version: "v0.39.7"
+    node_version: "lts/*"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install dependencies
+      apt:
+        name:
+          - curl
+          - build-essential
+          - libssl-dev
+        state: present
+
+    - name: Download and install NVM
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh | bash
+      args:
+        creates: /home/ubuntu/.nvm/nvm.sh
+      become_user: ubuntu
+
+    - name: Ensure NVM is available in bashrc
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        line: 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
+        state: present
+      become_user: ubuntu
+
+    - name: Install Node.js (LTS)
+      shell: |
+        source ~/.nvm/nvm.sh
+        nvm install {{ node_version }}
+      args:
+        executable: /bin/bash
+      become_user: ubuntu
+
+    - name: Install pnpm globally using npm
+      shell: |
+        source ~/.nvm/nvm.sh
+        npm install -g pnpm
+      args:
+        executable: /bin/bash
+      become_user: ubuntu
+
+    - name: Install pm2 globally using pnpm
+      shell: |
+        source ~/.nvm/nvm.sh
+        pnpm add -g pm2
+      args:
+        executable: /bin/bash
+      become_user: ubuntu

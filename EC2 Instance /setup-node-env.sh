@@ -22,4 +22,15 @@ npm install -g pnpm
 # Install pm2 globally using pnpm
 pnpm add -g pm2
 
-echo "Node.js, pnpm, and pm2 setup completed!"
+# Install Nginx
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+
+echo "Node.js, pnpm, pm2, and Nginx setup completed!"
+
+# Display installed versions
+echo "Node.js version: $(node -v)"
+echo "pnpm version: $(pnpm -v)"
+echo "pm2 version: $(pm2 -v)"
+echo "Nginx version: $(nginx -v)"
